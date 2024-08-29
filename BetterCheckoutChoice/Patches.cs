@@ -2,12 +2,10 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
 using HarmonyLib;
-using MyBox;
 using UnityEngine;
+#pragma warning disable CS0162 // Unreachable code detected
 
 namespace BetterCheckoutChoice;
 
@@ -33,15 +31,22 @@ public class Patches
                 return false;
             }
 
-            // Try to return an checkout with the least amount of customers and
-            // with automated checkout or the one the player is interacting with
-            Checkout chosenCheckout = CheckoutManager.Instance.GetTempCheckoutList()
-                .OrderBy(x => x.GetCustomerList().Count)
-                .FirstOrDefault(checkout => checkout.HasCashier || checkout.InInteraction || checkout.IsSelfCheckout);
+            // Filters checkouts to ones with cashiers or self checkouts
+            var checkoutList = CheckoutManager.Instance.GetTempCheckoutList()
+                .Where(checkout => checkout.HasCashier || checkout.InInteraction || checkout.IsSelfCheckout)
+                .ToList();
 
-            if (chosenCheckout != null)
+            var groupedCheckouts = checkoutList
+                .GroupBy(x => x.GetCustomerList().Count) // Group by customer count
+                .OrderBy(group => group.Key) // Order by the customer count
+                .FirstOrDefault(); // Get the group with the smallest count
+
+            if (groupedCheckouts != null && groupedCheckouts.Any())
             {
-                __result = chosenCheckout;
+                // Randomly select one checkout if there are multiple with the same count
+                var randomCheckout = groupedCheckouts.OrderBy(x => Guid.NewGuid()).FirstOrDefault();
+                
+                __result = randomCheckout;
                 return false;
             }
             
@@ -92,10 +97,7 @@ public class Patches
             __instance.StartCoroutine(FixStrandedCustomers(__instance));
         }
     }
-
     
-    private static readonly MethodInfo OnCheckoutMovedFi = AccessTools.Method(typeof(Customer), "OnCheckoutMoved");
-    private static readonly MethodInfo OnCheckoutBoxedFi = AccessTools.Method(typeof(Customer), "OnCheckoutBoxed");
     // ReSharper disable Unity.PerformanceAnalysis
     private static IEnumerator FixStrandedCustomers(CustomerManager customerManager)
     {
@@ -110,27 +112,8 @@ public class Patches
                 BetterMod.Logger.Warning("Stranded customer found, trying to force checkout search!");
                 try
                 {
-                    // Access the method via reflection and create an action from it,
-                    // it was the only way i found to properly remove the action from the delegate
-                    Action<Checkout> onCheckoutBoxedAction = (Action<Checkout>)Delegate.CreateDelegate(
-                        typeof(Action<Checkout>),
-                        i,
-                        OnCheckoutBoxedFi);
-                    Action<Checkout> onCheckoutMovedAction = (Action<Checkout>)Delegate.CreateDelegate(
-                        typeof(Action<Checkout>),
-                        i,
-                        OnCheckoutMovedFi);
-
-                    CheckoutInteraction instance = CheckoutInteraction.Instance;
-                    instance.onCheckoutBoxed =
-                        (Action<Checkout>)Delegate.Remove(instance.onCheckoutBoxed, onCheckoutBoxedAction);
-                    CheckoutInteraction instance2 = CheckoutInteraction.Instance;
-                    instance2.onCheckoutClosed =
-                        (Action<Checkout>)Delegate.Remove(instance2.onCheckoutClosed, onCheckoutMovedAction);
-                    
-                    i.GoToCheckout();
-                    
-                    customerCheckout.Unsubscribe(i);
+                    customerCheckout.UnsubscribeAndRemoveDelegate(i);
+                    i.GoToCheckout();   
                 }
                 catch (Exception e)
                 {
@@ -140,9 +123,8 @@ public class Patches
             });
             yield return new WaitForSeconds(5);
         }
-#pragma warning disable CS0162 // Unreachable code detected
+        // ReSharper disable once HeuristicUnreachableCode
         yield break;
-#pragma warning restore CS0162 // Unreachable code detected
     }
     
     /// <summary>
@@ -167,17 +149,4 @@ public class Patches
             return code;
         }
     }
-    
-    #if DEBUG
-    [HarmonyPatch(typeof(CustomerManager))]
-    [HarmonyPatch("CanSpawnCustomer", MethodType.Setter)]
-    public class OverrideCustomerSpawn()
-    {
-        [HarmonyPrefix]
-        public static bool Prefix()
-        {
-            return false;
-        }
-    }
-    #endif
 }
